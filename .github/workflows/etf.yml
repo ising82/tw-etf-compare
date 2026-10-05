@@ -1,6 +1,9 @@
 name: 台灣 ETF 績效資料
 
 on:
+  push:                       # 網頁或程式改動時自動重新部署（資料檔由 workflow 自己 commit，不觸發）
+    branches: [main]
+    paths: ["docs/**", "etf/**", ".github/workflows/etf.yml", "!docs/data/**"]
   schedule:
     - cron: "40 10 * * 1-6"   # UTC 10:40 = 台灣 18:40（週一～週六；週六為整段重抓）
   workflow_dispatch:

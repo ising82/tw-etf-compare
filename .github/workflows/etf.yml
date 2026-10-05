@@ -31,11 +31,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - id: pages
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
-
       - name: 抓取 ETF 清單、價格與配息
         run: python3 -m etf build ${{ inputs.full && '--full' || '' }}
 
@@ -49,6 +44,10 @@ jobs:
           else
             echo "資料沒有變更"
           fi
+
+      # 以下需要先在 Settings → Pages → Source 選「GitHub Actions」；沒開啟時這裡會失敗，但資料已存進 repo
+      - id: pages
+        uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:

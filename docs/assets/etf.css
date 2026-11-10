@@ -143,3 +143,13 @@ body[data-page="etf"] .wrap { max-width: 1320px; }
   .barcell .bar { display: none; }
   .barcell .v { min-width: 0; }
 }
+
+/* ---------- 手機：摘要卡兩欄、日期表單可換行 */
+.custom { flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .hero { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .tile { padding: 9px 10px; }
+  .tile-n { font-size: 14px; }
+  .tile-s { font-size: 11px; }
+  .custom input[type="date"] { width: 132px; padding: 5px 4px; }
+}

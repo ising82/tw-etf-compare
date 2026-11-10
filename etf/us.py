@@ -146,7 +146,7 @@ _add("多重資產", "股債配置", "全球", "AOA:iShares Core Aggressive Allo
      " AOM:iShares Core Moderate Allocation (40/60); AOK:iShares Core Conservative Allocation (30/70)")
 
 
-def collect(errors):
+def collect(errors, previous=None):
     seen, out = set(), []
     for r in _ROWS:
         if r["code"] in seen:

@@ -55,6 +55,17 @@ def load_cache():
         return {}
 
 
+def load_previous_list():
+    """前次資料檔裡的 ETF 清單（代號、名稱、市場、上市日），給清單來源失敗時備援。"""
+    try:
+        with open(OUT, encoding="utf-8") as f:
+            text = f.read()
+        data = json.loads(text[text.index("{"):].rstrip().rstrip(";"))
+        return [{k: e.get(k, "") for k in ("code", "name", "market", "listed")} for e in data.get("etfs", [])]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def decode(e):
     """壓縮格式 → {"rows": {日期: [收盤, 量]}, "div": {日期: 金額}}。"""
     rows, div = {}, {}
@@ -173,7 +184,8 @@ def run(full=False, limit=None, market="tw"):
     errors = []
     if not full and now_tw().weekday() == 5:
         full = True          # 每週六整段重抓，吸收 Yahoo 的事後修正
-    etfs = cfg["collect"](errors)
+    etfs = cfg["collect"](errors, load_previous_list())
+    t_list = time.time() - t0
     if limit:
         etfs = etfs[:limit]
     if not etfs:
@@ -182,7 +194,7 @@ def run(full=False, limit=None, market="tw"):
             print(" -", e)
         return 1
     cache = load_cache()
-    print(f"{cfg['label']} ETF {len(etfs)} 檔，快取 {len(cache)} 檔，{'全抓' if full else '增量'}")
+    print(f"{cfg['label']} ETF {len(etfs)} 檔（清單 {t_list:.0f} 秒），快取 {len(cache)} 檔，{'全抓' if full else '增量'}", flush=True)
 
     def work(e):
         errs = []
@@ -222,7 +234,7 @@ def run(full=False, limit=None, market="tw"):
                 item.update(enc)
                 out_etfs.append(item)
             if done % 48 == 0:
-                print(f"  {done}/{len(etfs)}")
+                print(f"  {done}/{len(etfs)}（{time.time() - t0:.0f} 秒）", flush=True)
 
     bench = []
     for b in cfg["bench"]:

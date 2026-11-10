@@ -14,16 +14,29 @@ import os
 import time
 from datetime import date, datetime, timedelta
 
+from concurrent.futures import ThreadPoolExecutor
+
 from .util import now_tw
-from . import universe, yahoo
+from . import universe, us, yahoo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "docs", "data", "etf.js")
-PREFIX = "window.ETF_DATA="
-BENCH = [{"code": "^TWII", "name": "加權指數", "yahoo": "^TWII", "cat": "指數", "note": "價格指數，不含股息"}]
 STALE_DAYS = 25      # 快取最後日期太舊就全抓
-PAUSE = 0.35         # 每檔之間停一下，避免被 Yahoo 限流
+PAUSE = 0.3          # 每個執行緒每檔之間停一下，避免被 Yahoo 限流
+WORKERS = 3
 MAX_STREAK = 12      # 連續失敗這麼多檔就判定被限流，其餘沿用快取，讓部署不被拖住
+
+MARKETS = {
+    "tw": {"label": "台股", "file": "etf.js", "prefix": "window.ETF_DATA=", "collect": universe.collect,
+           "start": yahoo.EPOCH_2000, "close_hour": 14, "detect_splits": True, "yahoo_names": False,
+           "bench": [{"code": "^TWII", "name": "加權指數", "yahoo": "^TWII", "cat": "指數", "note": "價格指數，不含股息"}],
+           "sources": {"list": "證交所／櫃買中心 ISIN 名冊", "prices": "Yahoo Finance（市價、除息）"}},
+    "us": {"label": "美股", "file": "us.js", "prefix": "window.ETF_DATA_US=", "collect": us.collect,
+           "start": 1262304000, "close_hour": 17, "detect_splits": False, "yahoo_names": True,   # 2010-01-01 起
+           "bench": [{"code": "^GSPC", "name": "S&P 500 指數", "yahoo": "^GSPC", "cat": "指數", "note": "價格指數，不含股息"}],
+           "sources": {"list": "人工挑選的約 250 檔代表性美股 ETF（etf/us.py）", "prices": "Yahoo Finance（市價、配息；2010 年起）"}},
+}
+OUT = os.path.join(ROOT, "docs", "data", MARKETS["tw"]["file"])   # 目前處理中的輸出檔（run 會依市場改寫）
+PREFIX = MARKETS["tw"]["prefix"]
 
 
 # ---------------------------------------------------------------- 快取
@@ -55,7 +68,8 @@ def decode(e):
         for idx, amt in e.get("div") or []:
             if 0 <= idx < len(dates):
                 div[dates[idx]] = amt
-    return {"rows": rows, "div": div, "splits": [], "adj": [list(a) for a in e.get("adj") or []]}
+    return {"rows": rows, "div": div, "splits": [], "adj": [list(a) for a in e.get("adj") or []],
+            "name": e.get("name", ""), "first": e.get("listed", "")}
 
 
 def encode(hist):
@@ -124,19 +138,22 @@ def merge(old, new):
     div = dict(old["div"]) if old else {}
     div.update(new["div"])
     return {"rows": rows, "div": div, "splits": new.get("splits", []),
-            "adj": (old or {}).get("adj") or [], "filled": new.get("filled", False)}
+            "adj": (old or {}).get("adj") or [], "filled": new.get("filled", False),
+            "name": new.get("name") or (old or {}).get("name", ""),
+            "first": new.get("first") or (old or {}).get("first", "")}
 
 
 # ---------------------------------------------------------------- 主流程
 
-def _update(symbol, cached, full, errors, label):
+def _update(symbol, cached, full, errors, label, cfg):
     last = max(cached["rows"]) if cached and cached["rows"] else None
     stale = (not last) or (date.today() - date.fromisoformat(last)).days > STALE_DAYS
     need_full = full or stale
+    kw = {"start": cfg["start"], "close_hour": cfg["close_hour"]}
     try:
-        new = yahoo.fetch_history(symbol, "max" if need_full else "1mo")
+        new = yahoo.fetch_history(symbol, "max" if need_full else "1mo", **kw)
         if not need_full and new["splits"] and max(new["splits"]) > last:
-            new = yahoo.fetch_history(symbol, "max")   # 期間有分割：Yahoo 會回溯調整舊價，要整段重抓
+            new = yahoo.fetch_history(symbol, "max", **kw)   # 期間有分割：Yahoo 會回溯調整舊價，要整段重抓
             need_full = True
     except Exception as e:  # noqa: BLE001
         errors.append(f"{label}：{e}")
@@ -147,55 +164,69 @@ def _update(symbol, cached, full, errors, label):
     return new if need_full else merge(cached, new)
 
 
-def run(full=False, limit=None):
+def run(full=False, limit=None, market="tw"):
+    global OUT, PREFIX
+    cfg = MARKETS[market]
+    OUT = os.path.join(os.path.dirname(OUT), cfg["file"])
+    PREFIX = cfg["prefix"]
     t0 = time.time()
     errors = []
     if not full and now_tw().weekday() == 5:
         full = True          # 每週六整段重抓，吸收 Yahoo 的事後修正
-    etfs = universe.collect(errors)
+    etfs = cfg["collect"](errors)
     if limit:
         etfs = etfs[:limit]
     if not etfs:
-        print("抓不到 ETF 清單，保留原檔不動")
+        print(f"{cfg['label']}：抓不到 ETF 清單，保留原檔不動")
         for e in errors:
             print(" -", e)
         return 1
     cache = load_cache()
-    print(f"ETF {len(etfs)} 檔，快取 {len(cache)} 檔，{'全抓' if full else '增量'}")
+    print(f"{cfg['label']} ETF {len(etfs)} 檔，快取 {len(cache)} 檔，{'全抓' if full else '增量'}")
+
+    def work(e):
+        errs = []
+        hist = _update(e["yahoo"], cache.get(e["code"]), full, errs, f"{e['code']} {e['name']}", cfg)
+        time.sleep(PAUSE)
+        return hist, errs
 
     out_etfs = []
-    filled = 0
+    filled, done = 0, 0
     streak, halted = 0, False
-    for i, e in enumerate(etfs, 1):
-        cached = cache.get(e["code"])
-        if halted:
-            hist = cached
-        else:
-            before = len(errors)
-            hist = _update(e["yahoo"], cached, full, errors, f"{e['code']} {e['name']}")
-            streak = streak + 1 if len(errors) > before else 0
-            if streak >= MAX_STREAK:
-                halted = True
-                errors.append(f"連續 {MAX_STREAK} 檔抓取失敗（可能被 Yahoo 限流），其餘 {len(etfs) - i} 檔沿用前次資料")
-                print(" !", errors[-1])
-        if hist and hist.get("filled"):
-            filled += 1
-        if hist:
-            for day, factor in adjust_splits(hist):
-                print(f"  {e['code']} {e['name']}：{day} 偵測到{'反' if factor > 1 else ''}分割 ×{factor:g}，已回溯調整")
-        enc = encode(hist) if hist else None
-        if enc:
-            item = {k: e[k] for k in ("code", "name", "market", "listed", "active", "cat", "region", "regionGuess")}
-            item.update(enc)
-            out_etfs.append(item)
-        if i % 25 == 0:
-            print(f"  {i}/{len(etfs)}")
-        if not halted:
-            time.sleep(PAUSE)
+    with ThreadPoolExecutor(WORKERS) as pool:
+        for i in range(0, len(etfs), 12):
+            chunk = etfs[i:i + 12]
+            results = [(cache.get(e["code"]), []) for e in chunk] if halted else list(pool.map(work, chunk))
+            for e, (hist, errs) in zip(chunk, results):
+                done += 1
+                errors.extend(errs)
+                streak = streak + 1 if errs else 0
+                if streak >= MAX_STREAK and not halted:
+                    halted = True
+                    errors.append(f"連續 {MAX_STREAK} 檔抓取失敗（可能被 Yahoo 限流），其餘 {len(etfs) - done} 檔沿用前次資料")
+                    print(" !", errors[-1])
+                if not hist:
+                    continue
+                if hist.get("filled"):
+                    filled += 1
+                if cfg["detect_splits"]:
+                    for day, factor in adjust_splits(hist):
+                        print(f"  {e['code']} {e['name']}：{day} 偵測到{'反' if factor > 1 else ''}分割 ×{factor:g}，已回溯調整")
+                enc = encode(hist)
+                if not enc:
+                    continue
+                item = {k: e[k] for k in ("code", "name", "market", "listed", "active", "cat", "theme", "region", "regionGuess")}
+                if cfg["yahoo_names"]:
+                    item["name"] = hist.get("name") or e["name"]
+                    item["listed"] = hist.get("first") or e["listed"]
+                item.update(enc)
+                out_etfs.append(item)
+            if done % 48 == 0:
+                print(f"  {done}/{len(etfs)}")
 
     bench = []
-    for b in BENCH:
-        hist = cache.get(b["code"]) if halted else _update(b["yahoo"], cache.get(b["code"]), full, errors, b["name"])
+    for b in cfg["bench"]:
+        hist = cache.get(b["code"]) if halted else _update(b["yahoo"], cache.get(b["code"]), full, errors, b["name"], cfg)
         enc = encode(hist) if hist else None
         if enc:
             item = dict(b)
@@ -208,15 +239,19 @@ def run(full=False, limit=None):
     stale = [e["code"] for e in out_etfs if e["lastDate"] < asof]
     if stale:
         errors.append(f"{len(stale)} 檔最新資料早於 {asof}（Yahoo 尚未更新），網頁會標示：{' '.join(stale[:20])}{' …' if len(stale) > 20 else ''}")
-    data = {"generated": now_tw().strftime("%Y-%m-%d %H:%M"), "asof": asof,
-            "count": len(out_etfs), "errors": errors,
-            "sources": {"list": "證交所／櫃買中心 ISIN 名冊", "prices": "Yahoo Finance（市價、除息）"},
+    data = {"market": market, "generated": now_tw().strftime("%Y-%m-%d %H:%M"), "asof": asof,
+            "count": len(out_etfs), "errors": errors, "sources": cfg["sources"],
             "etfs": out_etfs, "bench": bench}
+    if not out_etfs:
+        print(f"{cfg['label']}：沒有任何價格資料，保留原檔不動")
+        for e in errors[:30]:
+            print(" -", e)
+        return 1
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(PREFIX + json.dumps(data, ensure_ascii=False, separators=(",", ":")) + ";\n")
     size = os.path.getsize(OUT) / 1e6
-    print(f"完成：{len(out_etfs)} 檔，最新交易日 {asof}，{size:.1f} MB，{time.time() - t0:.0f} 秒，錯誤 {len(errors)} 筆")
+    print(f"{cfg['label']}完成：{len(out_etfs)} 檔，最新交易日 {asof}，{size:.1f} MB，{time.time() - t0:.0f} 秒，錯誤 {len(errors)} 筆")
     for e in errors[:30]:
         print(" -", e)
     return 0

@@ -178,4 +178,62 @@ def classify(code, name):
     else:
         region = "台灣"   # 台灣掛牌且名稱無任何地區字樣，預設台灣
         guess = cat not in ("債券", "商品/期貨", "槓桿/反向")   # 股票類純屬推測，網頁標「?」
-    return {"active": active, "cat": cat, "region": region, "regionGuess": guess}
+    return {"active": active, "cat": cat, "region": region, "regionGuess": guess,
+            "theme": _theme(tail, n, cat, region, active)}
+
+
+# ---------------------------------------------------------------- 主題（比分類更細，供「主題總覽」彙總）
+
+_SECTOR = (("半導體", ("半導體", "晶圓", "IC設計", "費城", "費半")),
+           ("AI與科技", ("AI", "科技", "電子", "5G", "通訊", "資安", "網路", "雲端", "機器人", "FANG", "MAG7", "創新",
+                      "元宇宙", "數位", "算力", "PCB", "數據", "太空", "衛星", "航太", "防衛", "研發")),
+           ("電動車與綠能", ("電動車", "未來車", "智能車", "電池", "儲能", "綠能", "潔淨", "綠色電力", "電力", "稀土")),
+           ("ESG永續", ("ESG", "永續", "公司治理", "低碳", "淨零")),
+           ("金融", ("金融", "銀行")),
+           ("生技醫療", ("生技", "基因", "醫療", "健康")),
+           ("不動產", ("不動產", "REIT", "地產")),
+           ("中小型股", ("中小", "富櫃", "上櫃", "中型")),
+           ("航運與商社", ("航運", "商社")))
+_COUNTRY = (("美國大盤", ("標普", "S&P", "NASDAQ", "納斯達克", "那斯達克", "道瓊", "美國", "美股")),
+            ("日本", ("日本", "日經", "東證")), ("印度", ("印度",)), ("越南", ("越南",)), ("韓國", ("韓國", "KOSPI")),
+            ("中國與香港", ("中國", "上證", "上証", "滬深", "深証", "深證", "深100", "A50", "A股", "中証", "中證", "恒生", "恆生", "香港")),
+            ("歐洲", ("歐洲", "歐元", "德國")), ("新興市場", ("新興",)), ("全球股票", ("全球", "世界", "國際")))
+
+
+def _theme(tail, n, cat, region, active):
+    if cat == "槓桿/反向":
+        return "反向" if tail == "R" or "反" in n else "槓桿"
+    if cat == "債券":
+        if any(k in n for k in ("非投", "高收益")):
+            return "非投等債"
+        if "新興" in n or "EM" in n:
+            return "新興市場債"
+        if any(k in n for k in ("金融債", "銀行債", "金融")):
+            return "金融債"
+        if any(k in n for k in ("投等", "投資級", "公司債", "IG", "A級", "A債", "Aa", "BBB", "電信債", "科技債", "醫療債",
+                                "能源債", "製藥債", "信用債", "公用債", "電能債")):
+            return "投資等級公司債"
+        if any(k in n for k in ("美債", "公債", "政府債", "美國政府")):
+            return "美國公債" if "中國" not in n and "澳洲" not in n else "其他債券"
+        return "其他債券"
+    if cat == "商品/期貨":
+        return "黃金" if "黃金" in n else "原油" if any(k in n for k in ("原油", "石油", "布蘭特")) else "其他商品"
+    if cat == "多重資產/其他":
+        return "平衡與多重資產"
+    home = region == "台灣"
+    if cat == "高股息" or "特別股" in n:
+        return "高股息" if home else "海外高股息"
+    if cat == "市值型":
+        if home:
+            return "台股大盤"
+        return next((t for t, ks in _COUNTRY if any(k in n for k in ks)), "海外其他")
+    for t, ks in _SECTOR:
+        if any(k in n for k in ks):
+            return t if home else "海外" + t
+    if not home:
+        hit = next((t for t, ks in _COUNTRY if any(k in n for k in ks)), None)
+        if hit:
+            return hit
+    if active:
+        return "主動選股" if home else "海外主動選股"
+    return "其他主題" if home else "海外其他"

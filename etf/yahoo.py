@@ -15,8 +15,8 @@ CHART = ("https://{}.finance.yahoo.com/v8/finance/chart/{}"
 EPOCH_2000 = 946684800   # 台灣第一檔 ETF（0050）2003 年上市，從 2000 年起抓即可
 
 
-def _result(symbol, rng):
-    p1 = EPOCH_2000 if rng == "max" else int(time.time()) - 40 * 86400
+def _result(symbol, rng, start):
+    p1 = start if rng == "max" else int(time.time()) - 40 * 86400
     p2 = int(time.time()) + 86400
     last = None
     for host in HOSTS:
@@ -31,8 +31,9 @@ def _result(symbol, rng):
     raise RuntimeError(last)
 
 
-def fetch_history(symbol, rng="max"):
-    res = _result(symbol, rng)
+def fetch_history(symbol, rng="max", start=EPOCH_2000, close_hour=14):
+    """close_hour：交易所當地幾點以後才把當日那根視為已收盤（台股 14、美股 17）。"""
+    res = _result(symbol, rng, start)
     offset = (res.get("meta") or {}).get("gmtoffset") or 28800
     tz = timezone(timedelta(seconds=offset))
 
@@ -52,7 +53,7 @@ def fetch_history(symbol, rng="max"):
         rows[day(t)] = [float(c), int(v or 0)]
 
     today = datetime.now(tz)
-    if today.hour < 14 and rows and max(rows) == today.date().isoformat():
+    if today.hour < close_hour and rows and max(rows) == today.date().isoformat():
         del rows[today.date().isoformat()]        # 盤中執行：當日尚未收盤，不採用
 
     # Yahoo 常把最新一根日 K 的收盤留空，但 meta 的 regularMarketPrice 已是當日收盤；盤後才拿來補
@@ -62,7 +63,7 @@ def fetch_history(symbol, rng="max"):
     if rmt and rmp and rmp > 0:
         t = datetime.fromtimestamp(int(rmt), tz)
         d = t.date().isoformat()
-        after_close = t.date() < today.date() or today.hour >= 14
+        after_close = t.date() < today.date() or today.hour >= close_hour
         if after_close and d not in rows and (not rows or d > max(rows)):
             rows[d] = [float(rmp), int(meta.get("regularMarketVolume") or 0)]
             filled = True
@@ -74,4 +75,7 @@ def fetch_history(symbol, rng="max"):
         if amt and amt > 0 and d.get("date"):
             div[day(d["date"])] = float(amt)
     splits = sorted(day(s["date"]) for s in (events.get("splits") or {}).values() if s.get("date"))
-    return {"rows": rows, "div": div, "splits": splits, "filled": filled}
+    first = meta.get("firstTradeDate")
+    return {"rows": rows, "div": div, "splits": splits, "filled": filled,
+            "name": (meta.get("longName") or meta.get("shortName") or "").strip(),
+            "first": day(first) if first else ""}

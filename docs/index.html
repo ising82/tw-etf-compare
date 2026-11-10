@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>台灣 ETF 績效比較</title>
-<meta name="description" content="台灣上市櫃 ETF（主動／被動）績效比較：自訂天／週／月／年期間、含息或不含息、波動與最大回撤、配息率，每日自動更新。">
+<title>ETF 績效比較｜台股・美股</title>
+<meta name="description" content="台股與美股 ETF 績效比較：哪個主題最強、歷年報酬、自訂天／週／月／年期間、含息或不含息、波動與最大回撤、配息率，每日自動更新。">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>">
 <link rel="stylesheet" href="assets/style.css">
 <link rel="stylesheet" href="assets/etf.css">
@@ -12,12 +12,20 @@
 <body data-page="etf">
 <header class="top">
   <div class="wrap top-row">
-    <a class="brand" href="./">📈 台灣 ETF 績效比較</a>
+    <a class="brand" href="./">📈 ETF 績效比較</a>
+    <div class="mkt" id="mkt" role="tablist" aria-label="市場">
+      <button class="mkt-btn" data-mkt="tw" role="tab">台股 ETF</button>
+      <button class="mkt-btn" data-mkt="us" role="tab">美股 ETF</button>
+    </div>
     <div class="stamp" id="stamp"></div>
   </div>
 </header>
 
 <main class="wrap" id="main">
+  <div id="loading" class="notice" hidden>資料載入中…</div>
+  <div id="app" hidden>
+  <section class="hero" id="hero" aria-label="重點摘要"></section>
+
   <section class="panel ctl">
     <div class="ctl-row">
       <span class="lbl">期間</span>
@@ -51,57 +59,84 @@
     </div>
     <div class="ctl-row">
       <span class="lbl">篩選</span>
-      <input class="search" id="q" type="search" placeholder="代號或名稱" autocomplete="off">
       <div class="filters seg" id="type">
         <button class="chip" data-type="all">全部</button>
         <button class="chip" data-type="passive">被動式</button>
         <button class="chip" data-type="active">主動式</button>
       </div>
-      <select id="market" class="sel" aria-label="市場">
+      <select id="market" class="sel" aria-label="交易所">
         <option value="all">上市＋上櫃</option>
         <option value="上市">上市</option>
         <option value="上櫃">上櫃</option>
       </select>
-      <label class="toggle">20日均量 ≥ <input type="number" id="minvol" min="0" step="100" value="0" class="mini"> 張</label>
-      <label class="toggle"><input type="checkbox" id="hide-short" checked> 隱藏資料不足</label>
+      <label class="toggle"><span id="minvol-lbl">20日均量 ≥</span> <input type="number" id="minvol" min="0" step="100" value="0" class="mini"> <span id="minvol-unit">張</span></label>
     </div>
     <div class="ctl-row">
       <span class="lbl">地區</span>
       <div class="filters" id="regions"></div>
-      <span class="lbl" style="margin-left:8px">分類</span>
+    </div>
+    <div class="ctl-row">
+      <span class="lbl">分類</span>
       <div class="filters" id="cats"></div>
     </div>
   </section>
 
-  <section class="panel" id="compare-panel">
-    <div class="panel-head">
-      <h2>比較走勢<span class="sub" id="cmp-sub"></span></h2>
-      <div class="filters" id="bench"></div>
-    </div>
-    <div class="panel-body">
-      <div id="chart" class="chart"></div>
-      <div id="cmp-table"></div>
-    </div>
-  </section>
+  <nav class="views" id="views" role="tablist" aria-label="檢視">
+    <button class="view-btn" data-view="theme" role="tab">主題總覽</button>
+    <button class="view-btn" data-view="rank" role="tab">ETF 排行與比較</button>
+  </nav>
 
-  <section class="panel">
-    <div class="panel-head">
-      <h2>排行<span class="sub" id="rank-sub"></span></h2>
-      <div class="filters">
-        <button class="chip" id="clear-sel">清除勾選</button>
-        <button class="chip" id="csv">下載 CSV</button>
+  <div id="view-theme">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>主題總覽<span class="sub" id="theme-sub"></span></h2>
+        <div class="filters">
+          <div class="filters seg" id="theme-mode">
+            <button class="chip" data-tm="recent">近期表現</button>
+            <button class="chip" data-tm="years">歷年報酬</button>
+          </div>
+          <label class="toggle"><input type="checkbox" id="inc-lev"> 納入槓桿／反向</label>
+        </div>
       </div>
-    </div>
-    <div class="tbl-wrap"><table class="tbl" id="tbl"></table></div>
-    <div class="empty" id="tbl-note"></div>
-  </section>
+      <div class="tbl-wrap"><table class="tbl theme-tbl" id="theme-tbl"></table></div>
+      <div class="empty" id="theme-note"></div>
+    </section>
+  </div>
+
+  <div id="view-rank" hidden>
+    <section class="panel" id="compare-panel">
+      <div class="panel-head">
+        <h2>比較走勢<span class="sub" id="cmp-sub"></span></h2>
+        <div class="filters" id="bench"></div>
+      </div>
+      <div class="panel-body">
+        <div id="chart" class="chart"></div>
+        <div class="tbl-wrap" id="cmp-table"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>排行<span class="sub" id="rank-sub"></span></h2>
+        <div class="filters">
+          <input class="search" id="q" type="search" placeholder="代號或名稱" autocomplete="off">
+          <select id="theme" class="sel" aria-label="主題"></select>
+          <label class="toggle"><input type="checkbox" id="hide-short" checked> 隱藏資料不足</label>
+          <button class="chip" id="clear-sel">清除勾選</button>
+          <button class="chip" id="csv">下載 CSV</button>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table class="tbl" id="tbl"></table></div>
+      <div class="empty" id="tbl-note"></div>
+    </section>
+  </div>
 
   <footer class="foot" id="footer"></footer>
+  </div>
 </main>
 
 <dialog id="detail"></dialog>
 
-<script src="data/etf.js"></script>
 <script src="assets/etf.js"></script>
 </body>
 </html>

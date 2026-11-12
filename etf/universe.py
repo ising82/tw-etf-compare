@@ -6,6 +6,8 @@
 屬啟發式判斷，網頁上有說明。
 """
 import re
+import threading
+import time
 
 from .util import fetch, fetch_json
 
@@ -27,7 +29,7 @@ def _cells(row):
 
 def _isin(mode, market):
     """ISIN 名冊欄位：有價證券代號及名稱、ISIN、上市日、市場別、產業別、CFICode、備註。"""
-    html = fetch(ISIN.format(mode), timeout=60).decode("cp950", errors="replace")
+    html = fetch(ISIN.format(mode), timeout=40, retries=1).decode("cp950", errors="replace")
     out = []
     for row in _TR.findall(html):
         cells = _cells(row)
@@ -58,19 +60,50 @@ def _fallback(market):
             for c, n in pairs if c and CODE.match(c)]
 
 
-def collect(errors):
-    """回傳 [{code, name, market, listed, yahoo, active, cat, region}]，依代號排序。"""
+ISIN_DEADLINE = 120   # 名冊網站從海外連線有時極慢（細水長流不會觸發單次逾時），所以另設總時限
+
+
+def _with_deadline(fn, seconds):
+    box = {}
+
+    def run():
+        try:
+            box["ok"] = fn()
+        except Exception as e:  # noqa: BLE001
+            box["err"] = e
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(seconds)
+    if "ok" in box:
+        return box["ok"]
+    raise box.get("err") or TimeoutError(f"超過 {seconds} 秒")
+
+
+def collect(errors, previous=None):
+    """回傳 [{code, name, market, listed, yahoo, active, cat, theme, region, regionGuess}]，依代號排序。
+
+    previous：前次資料檔裡的清單。名冊抓不到時沿用它（保有上市日），再用每日收盤清單補上新掛牌者。"""
     seen = {}
     for mode, market, suffix in MARKETS:
+        t0 = time.time()
         try:
-            rows = _isin(mode, market)
+            rows = _with_deadline(lambda: _isin(mode, market), ISIN_DEADLINE)
+            how = "名冊"
         except Exception as e:  # noqa: BLE001
-            errors.append(f"ETF 名冊（{market}）：{e}，改用每日收盤清單")
+            prev = [dict(code=r["code"], name=r["name"], market=market, listed=r.get("listed", ""))
+                    for r in (previous or []) if r.get("market") == market]
             try:
-                rows = _fallback(market)
+                daily = _with_deadline(lambda: _fallback(market), 90)
             except Exception as e2:  # noqa: BLE001
-                errors.append(f"ETF 清單備援（{market}）：{e2}")
-                rows = []
+                daily = []
+                if not prev:
+                    errors.append(f"ETF 清單備援（{market}）：{e2}")
+            have = {r["code"] for r in prev}
+            rows = prev + [r for r in daily if r["code"] not in have]
+            how = "前次清單＋每日收盤清單" if prev else "每日收盤清單"
+            errors.append(f"ETF 名冊（{market}）：{e}，改用{how}")
+        print(f"  {market} ETF 清單 {len(rows)} 檔（{how}，{time.time() - t0:.0f} 秒）", flush=True)
         for r in rows:
             if r["code"] in seen:
                 continue
